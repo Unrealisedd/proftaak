@@ -3,39 +3,48 @@
 #include <WiFiS3.h>
 #include <ArduinoJson.h>
 
-// Configuration
 namespace Config {
     // WiFi credentials
-    const char* wifinaam = "Netlab-OIL430";
-    const char* wifipass = "DesignChallenge";
+    const char* WIFI_SSID = "Netlab-OIL430";
+    const char* WIFI_PASSWORD = "DesignChallenge";
 
     // Server details
-    const char* API_IP = "192.168.68.51";
+    const char* API_IP = "192.168.122.29";
     const int API_PORT = 5000;
     const char* API_ENDPOINT = "/api/BottleReturn/process";
 
     // System parameters
-    const int baud = 9600;
-    const int checkinterval = 100;
-    const int servodelay = 5000;
-    const float mindistance = 8.0;
-    const float maxdistance = 12.0;
+    const int BAUD_RATE = 9600;
+    const int CHECK_INTERVAL = 100;
+    const int SERVO_DELAY = 5000;
+    const float MIN_DISTANCE = 8.0;
+    const float MAX_DISTANCE = 12.0;
 
     // Pin configurations
     namespace Pins {
         const int TRIG_PIN = 9;
         const int ECHO_PIN = 10;
         const int SERVO_PIN = 11;
-        const int RX = 2;
-        const int TX = 3;
+        const int SCANNER_RX = 2;
+        const int SCANNER_TX = 3;
     }
 
     // Servo positions
     namespace ServoPositions {
-        const int extend = 1000;
-        const int retract = 2000;
+        const int EXTEND = 1000;
+        const int RETRACT = 2000;
     }
 }
+
+class Logger {
+public:
+    static void log(const String& message) {
+        Serial.print("[");
+        Serial.print(millis());
+        Serial.print("] ");
+        Serial.println(message);
+    }
+};
 
 class DistanceSensor {
 private:
@@ -48,12 +57,13 @@ public:
     DistanceSensor() 
         : trigPin(Config::Pins::TRIG_PIN),
           echoPin(Config::Pins::ECHO_PIN),
-          minDistance(Config::mindistance),
-          maxDistance(Config::maxdistance) {}
+          minDistance(Config::MIN_DISTANCE),
+          maxDistance(Config::MAX_DISTANCE) {}
 
     void init() {
         pinMode(trigPin, OUTPUT);
         pinMode(echoPin, INPUT);
+        Logger::log("Distance sensor initialized");
     }
 
     float readDistance() {
@@ -69,7 +79,11 @@ public:
 
     bool isObjectInRange() {
         float distance = readDistance();
-        return (distance >= minDistance && distance <= maxDistance);
+        if (distance >= minDistance && distance <= maxDistance) {
+            Logger::log("Object detected at distance: " + String(distance) + " cm");
+            return true;
+        }
+        return false;
     }
 };
 
@@ -80,16 +94,20 @@ private:
 
 public:
     BarcodeScanner()
-        : scanner(Config::Pins::RX, Config::Pins::TX),
-          baudRate(Config::baud) {}
+        : scanner(Config::Pins::SCANNER_RX, Config::Pins::SCANNER_TX),
+          baudRate(Config::BAUD_RATE) {}
 
     void init() {
         scanner.begin(baudRate);
+        Logger::log("Barcode scanner initialized");
     }
 
     String readBarcode() {
         String barcode = scanner.readStringUntil('\n');
         barcode.trim();
+        if (barcode.length() > 0) {
+            Logger::log("Barcode read: " + barcode);
+        }
         return barcode;
     }
 
@@ -110,21 +128,24 @@ public:
     void init() {
         actuator.attach(Config::Pins::SERVO_PIN);
         retract();
+        Logger::log("Servo controller initialized");
     }
 
     void extend() {
-        actuator.writeMicroseconds(Config::ServoPositions::extend);
+        actuator.writeMicroseconds(Config::ServoPositions::EXTEND);
         isExtended = true;
         lastActivationTime = millis();
+        Logger::log("Servo extended");
     }
 
     void retract() {
-        actuator.writeMicroseconds(Config::ServoPositions::retract);
+        actuator.writeMicroseconds(Config::ServoPositions::RETRACT);
         isExtended = false;
+        Logger::log("Servo retracted");
     }
 
     void update() {
-        if (isExtended && (millis() - lastActivationTime >= Config::servodelay)) {
+        if (isExtended && (millis() - lastActivationTime >= Config::SERVO_DELAY)) {
             retract();
         }
     }
@@ -140,6 +161,7 @@ private:
     const unsigned long timeout;
 
     bool sendHttpRequest(const String& payload) {
+        Logger::log("Sending HTTP request...");
         if (wifiClient.connect(Config::API_IP, Config::API_PORT)) {
             String postRequest = "POST " + String(Config::API_ENDPOINT) + " HTTP/1.1\r\n" +
                                "Host: " + String(Config::API_IP) + "\r\n" +
@@ -155,11 +177,14 @@ private:
                 if (wifiClient.available()) {
                     wifiClient.readString();
                     wifiClient.stop();
+                    Logger::log("HTTP request successful");
                     return true;
                 }
             }
             wifiClient.stop();
+            Logger::log("HTTP request timeout");
         }
+        Logger::log("HTTP request failed");
         return false;
     }
 
@@ -167,17 +192,24 @@ public:
     NetworkManager() : timeout(5000) {}
 
     bool connect() {
-        WiFi.begin(Config::wifinaam, Config::wifipass);
+        Logger::log("Connecting to WiFi network: " + String(Config::WIFI_SSID));
+        WiFi.begin(Config::WIFI_SSID, Config::WIFI_PASSWORD);
         unsigned long startTime = millis();
         
         while (WiFi.status() != WL_CONNECTED && millis() - startTime < timeout) {
             delay(500);
         }
         
-        return WiFi.status() == WL_CONNECTED;
+        if (WiFi.status() == WL_CONNECTED) {
+            Logger::log("WiFi connected. IP: " + WiFi.localIP().toString());
+            return true;
+        }
+        Logger::log("WiFi connection failed");
+        return false;
     }
 
     bool checkApiConnection() {
+        Logger::log("Checking API connection...");
         if (wifiClient.connect(Config::API_IP, Config::API_PORT)) {
             String getRequest = String("GET /api/BottleReturn/status HTTP/1.1\r\n") +
                               "Host: " + String(Config::API_IP) + "\r\n" +
@@ -190,15 +222,19 @@ public:
                 if (wifiClient.available()) {
                     String response = wifiClient.readString();
                     wifiClient.stop();
-                    return response.indexOf("Systeem werkt") != -1;
+                    bool success = response.indexOf("Systeem werkt") != -1;
+                    Logger::log(success ? "API connection successful" : "API connection failed");
+                    return success;
                 }
             }
             wifiClient.stop();
         }
+        Logger::log("API connection failed");
         return false;
     }
 
     bool sendBottleData(const String& barcode, bool servoActivated) {
+        Logger::log("Processing barcode: " + barcode);
         StaticJsonDocument<200> doc;
         doc["barcode"] = barcode;
         doc["servoactivated"] = servoActivated;
@@ -206,6 +242,7 @@ public:
         
         String jsonString;
         serializeJson(doc, jsonString);
+        Logger::log("Sending data: " + jsonString);
         
         return sendHttpRequest(jsonString);
     }
@@ -218,29 +255,31 @@ private:
     ServoController servoController;
     NetworkManager networkManager;
     unsigned long lastDistanceCheck;
+    unsigned long lastStatusLog;
+    const unsigned long STATUS_LOG_INTERVAL = 30000;
 
 public:
-    BottleReturnSystem() : lastDistanceCheck(0) {}
+    BottleReturnSystem() : lastDistanceCheck(0), lastStatusLog(0) {}
 
     void init() {
-        Serial.begin(Config::baud);
+        Serial.begin(Config::BAUD_RATE);
+        Logger::log("Initializing Bottle Return System");
+        
         distanceSensor.init();
         barcodeScanner.init();
         servoController.init();
         
-        Serial.println("Connecting to WiFi...");
         if (!networkManager.connect()) {
-            Serial.println("WiFi connection failed!");
+            Logger::log("System initialization failed at WiFi connection");
             return;
         }
         
-        Serial.println("Checking API connection...");
         if (!networkManager.checkApiConnection()) {
-            Serial.println("API connection failed!");
+            Logger::log("System initialization failed at API connection");
             return;
         }
         
-        Serial.println("System initialized successfully!");
+        Logger::log("System initialization complete");
     }
 
     void update() {
@@ -251,7 +290,7 @@ public:
             }
         }
         
-        if (millis() - lastDistanceCheck >= Config::checkinterval) {
+        if (millis() - lastDistanceCheck >= Config::CHECK_INTERVAL) {
             if (distanceSensor.isObjectInRange() && !servoController.getIsExtended()) {
                 servoController.extend();
             }
@@ -259,6 +298,12 @@ public:
         }
         
         servoController.update();
+        
+        if (millis() - lastStatusLog >= STATUS_LOG_INTERVAL) {
+            Logger::log("System status - Servo: " + 
+                       String(servoController.getIsExtended() ? "Extended" : "Retracted"));
+            lastStatusLog = millis();
+        }
     }
 };
 
