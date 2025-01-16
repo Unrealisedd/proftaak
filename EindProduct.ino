@@ -2,6 +2,8 @@
 #include <SoftwareSerial.h>
 #include <WiFiS3.h>
 #include <ArduinoJson.h>
+#include <SD.h>
+#include <SPI.h>
 
 namespace Config {
     // WiFi credentials
@@ -34,17 +36,65 @@ namespace Config {
         const int EXTEND = 1000;
         const int RETRACT = 2000;
     }
+
+    // SD Card settings
+    namespace SDCard {
+        const int CS_PIN = 4;  // Chip Select pin for SD card
+        const String LOG_FILE = "system.log";
+        const unsigned long WRITE_INTERVAL = 5000; // Write to SD every 5 seconds
+    }
 }
 
 class Logger {
+private:
+    static String buffer;
+    static unsigned long lastWrite;
+    
+    static void writeBufferToSD() {
+        if (buffer.length() == 0) return;
+        
+        File logFile = SD.open(Config::SDCard::LOG_FILE, FILE_WRITE);
+        if (logFile) {
+            logFile.println(buffer);
+            logFile.close();
+            buffer = "";
+        }
+    }
+
 public:
+    static void init() {
+        if (!SD.begin(Config::SDCard::CS_PIN)) {
+            Serial.println("SD card initialization failed!");
+            return;
+        }
+        Serial.println("SD card initialized successfully");
+    }
+
     static void log(const String& message) {
-        Serial.print("[");
-        Serial.print(millis());
-        Serial.print("] ");
-        Serial.println(message);
+        String timestamp = "[" + String(millis()) + "] ";
+        String logMessage = timestamp + message;
+        
+        // Print to Serial
+        Serial.println(logMessage);
+        
+        // Add to buffer
+        buffer += logMessage + "\n";
+        
+        // Check if it's time to write to SD
+        if (millis() - lastWrite >= Config::SDCard::WRITE_INTERVAL) {
+            writeBufferToSD();
+            lastWrite = millis();
+        }
+    }
+
+    static void flush() {
+        writeBufferToSD();
     }
 };
+
+// Initialize static members
+String Logger::buffer = "";
+unsigned long Logger::lastWrite = 0;
 
 class DistanceSensor {
 private:
@@ -263,6 +313,7 @@ public:
 
     void init() {
         Serial.begin(Config::BAUD_RATE);
+        Logger::init();  // Initialize SD card logging
         Logger::log("Initializing Bottle Return System");
         
         distanceSensor.init();
@@ -315,4 +366,5 @@ void setup() {
 
 void loop() {
     bottleSystem.update();
+    Logger::flush();  // Ensure any remaining logs are written to SD
 }
